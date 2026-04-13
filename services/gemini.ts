@@ -2,7 +2,18 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { TextType, AIAuditError } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+// 1. Buscamos la llave de forma compatible con Vercel/Vite
+const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
+
+// 2. Inicializamos la IA con la llave encontrada
+const genAI = new GoogleGenerativeAI(apiKey);
+
+// 3. Exportamos el modelo para que tu simulador pueda pedirle textos
+export const model = genAI.getGenerativeModel({ 
+  model: "gemini-1.5-flash" 
+});
 
 const TOPICS = {
   [TextType.PLANO]: [
