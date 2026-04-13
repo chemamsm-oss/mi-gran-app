@@ -2,8 +2,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { TextType, AIAuditError } from "../types";
 
-const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || "";
-const ai = new GoogleGenAI(apiKey);
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const TOPICS = {
   [TextType.PLANO]: [
