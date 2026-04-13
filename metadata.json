@@ -1,0 +1,5 @@
+{
+  "name": "Simulador de Mecanografía Cortes Generales",
+  "description": "Una aplicación profesional diseñada para preparar la prueba de mecanografía de las Cortes Generales, con generación de textos por IA y sistema de corrección oficial basado en pulsaciones netas y penalizaciones específicas.",
+  "requestFramePermissions": []
+}
