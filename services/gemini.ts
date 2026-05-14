@@ -89,7 +89,7 @@ const TOPICS = {
 };
 
 const PROMPTS = {
-  [TextType.PLANO]: "Genera un texto extenso de prosa continua sobre {TOPIC}. REGLA CRÍTICA: NO uses encabezados, NO uses listas, NO uses saludos ni despedidas. Solo párrafos de texto plano, denso y fluido. El texto DEBE tener un tono marcadamente parlamentario, legislativo o jurídico-administrativo, citando explícitamente artículos de la Constitución, Leyes Orgánicas reales (con su año y número) y terminología propia de las Cortes Generales o la Administración Pública. {PERSPECTIVE}"
+  [TextType.PLANO]: "Genera un texto extenso de prosa continua sobre {TOPIC}. REGLA CRÍTICA: NO uses encabezados, NO uses listas, NO uses saludos ni despedidas. Solo párrafos de texto plano, denso y fluido. El texto DEBE tener un tono marcadamente parlamentario, legislativo o jurídico-administrativo, citando explícitamente artículos de la Constitución, Leyes Orgánicas reales (con su año y número) y terminología propia de las Cortes Generales o la Administración Pública. OTRA REGLA CRÍTICA: Escribe siempre los números con cifras (ej. 'artículo 12.3', '1500', '2024') y no con letras ('doce punto tres', 'mil quinientos'). {PERSPECTIVE}"
 };
 
 const PERSPECTIVES_PLANO = [
@@ -135,28 +135,26 @@ export const analyzeFreeText = async (text: string): Promise<AIAuditError[]> => 
 
     const response = await ai.models.generateContent({
       model: 'gemini-3.1-pro-preview',
-      contents: `ACTÚA COMO UN TRIBUNAL EXAMINADOR DE LAS CORTES GENERALES. 
-      Analiza exhaustivamente el siguiente texto escrito por un opositor. Tu tarea es encontrar TODAS las erratas, faltas de ortografía, errores tipográficos (letras cambiadas de orden, letras omitidas, letras extra) y errores gramaticales.
-      
-      Ejemplos de errores que DEBES detectar sin falta:
-      - Inversiones de letras: "ocmo" (como), "dentor" (dentro), "evisat" (vista/revisar), "catastarl" (catastral), "foramr" (formar).
-      - Erratas por omisión o adición: "pripiedad" (propiedad), "inmobilidaria" (inmobiliaria), "conteciso" (contencioso), "realciones" (relaciones).
-      - Errores de tildes: "coordianción", "simplificaicón", "inmatricualción".
-      - Uniones/Separaciones incorrectas: "d elos" (de los), "d ela" (de la).
-      
-      NO corrijas estilo, ni sugieras sinónimos. Si una palabra es correcta, no la marques.
-      
-      El texto proporcionado tiene cada palabra numerada con su índice entre corchetes, por ejemplo: "[0] Hola [1] mudno".
-      
-      CRITERIOS DE CLASIFICACIÓN:
-      1. 'simple': Un solo carácter incorrecto, falta de tilde, mayúscula mal usada, o signo de puntuación omitido.
-      2. 'inversion': Solo cuando se intercambian dos letras contiguas (ej. 'públcia' por 'pública', 'foramr' por 'formar').
-      3. 'multiple': La palabra tiene más de un fallo o es irreconocible.
+      contents: `ERES EL TRIBUNAL DE ORTOGRAFÍA DE LAS CORTES GENERALES.
+Tu única misión es leer el texto del opositor y encontrar TODOS los errores ortográficos, tipográficos (erratas) y gramaticales sin excepción.
 
-      Devuelve un array JSON con TODOS los errores encontrados. Usa EXACTAMENTE el número entre corchetes que precede a la palabra errónea como 'index'.
-      
-      TEXTO DEL OPOSITOR:
-      ${indexedText}`,
+REGLAS ESTRICTAS:
+1. Revisa PALABRA por PALABRA. No te dejes llevar por el contexto. Si dice "plaver" en lugar de "placer", es un ERROR.
+2. Errores que debes buscar:
+   - Faltas de ortografía (b/v, g/j, h, etc.)
+   - Faltas de acentuación (tildes que faltan o sobran)
+   - Erratas tipográficas ("mudno" por "mundo", "plaver" por "placer", "porpiedad" por "propiedad")
+   - Uniones de palabras ("dela" por "de la")
+3. No evalúes el estilo, puntuación estilística ni mayúsculas después de punto, SOLO ORTOGRAFÍA Y TIPOGRAFÍA.
+4. El texto tiene índices: "[0] Hola [1] mudno". Usa el índice EXACTO de la palabra errónea.
+
+CLASIFICACIÓN DEL ERROR ('type'):
+- 'simple': Un solo carácter mal (ej. "plaver", "dificl"), o falta de tilde.
+- 'inversion': Dos letras contiguas invertidas (ej. "mudno", "ocmo").
+- 'multiple': Varios caracteres mal, o palabra irreconocible.
+
+TEXTO DEL OPOSITOR:
+${indexedText}`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -164,11 +162,11 @@ export const analyzeFreeText = async (text: string): Promise<AIAuditError[]> => 
           items: {
             type: Type.OBJECT,
             properties: {
-              word: { type: Type.STRING, description: "La palabra errónea exacta tal como aparece en el texto" },
-              correction: { type: Type.STRING, description: "Corrección según la RAE" },
-              type: { type: Type.STRING, enum: ["simple", "inversion", "multiple"], description: "Tipo de penalización" },
-              reason: { type: Type.STRING, description: "Explica brevemente la regla RAE incumplida" },
-              index: { type: Type.INTEGER, description: "El número exacto entre corchetes que precede a la palabra" }
+              word: { type: Type.STRING, description: "La palabra errónea exacta del texto" },
+              correction: { type: Type.STRING, description: "La palabra correcta" },
+              type: { type: Type.STRING, enum: ["simple", "inversion", "multiple"] },
+              reason: { type: Type.STRING },
+              index: { type: Type.INTEGER }
             },
             required: ["word", "correction", "type", "reason", "index"]
           }
@@ -177,9 +175,12 @@ export const analyzeFreeText = async (text: string): Promise<AIAuditError[]> => 
     });
 
     try {
-      return JSON.parse(response.text || "[]");
+      // Remove any potential markdown formatting from the response
+      const rawText = response.text || "[]";
+      const cleanedText = rawText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+      return JSON.parse(cleanedText);
     } catch (e) {
-      console.error("JSON Parse Error:", e);
+      console.error("JSON Parse Error:", e, response.text);
       return [];
     }
   } catch (error) {

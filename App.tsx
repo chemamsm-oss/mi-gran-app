@@ -3,6 +3,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { AppState, ScoringResult, TextType, TestRecord } from './types';
 import { generateLegislativeText, analyzeFreeText } from './services/gemini';
 import { calculateFinalScore, calculateFreeWritingScore, countStrokes } from './utils/scoring';
+import { generateResultsPDF } from './utils/pdf';
 import Timer from './components/Timer';
 import Editor from './components/Editor';
 import Metronome from './components/Metronome';
@@ -18,10 +19,13 @@ const App: React.FC = () => {
   const [hasStartedTyping, setHasStartedTyping] = useState(false);
   const [isCalculating, setIsCalculating] = useState(false);
   const [startTime, setStartTime] = useState<number | null>(null);
+  const [manualTypedTextLibre, setManualTypedTextLibre] = useState('');
+  const [manualTypedTextCotejo, setManualTypedTextCotejo] = useState('');
   const [history, setHistory] = useState<TestRecord[]>(() => {
     const saved = localStorage.getItem('mecacortes_history');
     return saved ? JSON.parse(saved) : [];
   });
+  const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     localStorage.setItem('mecacortes_history', JSON.stringify(history));
@@ -58,6 +62,9 @@ const App: React.FC = () => {
     setState(AppState.REVIEWING);
   }, []);
 
+  const [isUploadedWord, setIsUploadedWord] = useState(false);
+  const [hasSavedManualToHistory, setHasSavedManualToHistory] = useState(false);
+
   const calculateResults = useCallback(async () => {
     setIsCalculating(true);
     try {
@@ -72,18 +79,18 @@ const App: React.FC = () => {
             const auditErrors = await Promise.race([auditPromise, timeoutPromise]);
             const finalResults = calculateFreeWritingScore(typedText, auditErrors, 600);
             setResults(finalResults);
-            saveToHistory(finalResults);
+            if (!isUploadedWord) saveToHistory(finalResults);
         } catch (e) {
             console.warn("AI Audit timed out or failed, falling back to basic score");
             alert("La auditoría detallada está tardando demasiado. Mostrando resultados básicos de velocidad y pulsaciones.");
             const basicResults = calculateFreeWritingScore(typedText, [], 600);
             setResults(basicResults);
-            saveToHistory(basicResults);
+            if (!isUploadedWord) saveToHistory(basicResults);
         }
       } else {
         const finalResults = calculateFinalScore(originalText, typedText, 600); 
         setResults(finalResults);
-        saveToHistory(finalResults);
+        if (!isUploadedWord) saveToHistory(finalResults);
       }
       setState(AppState.RESULTS);
     } catch (error) {
@@ -91,7 +98,7 @@ const App: React.FC = () => {
     } finally {
       setIsCalculating(false);
     }
-  }, [originalText, typedText, selectedType]);
+  }, [originalText, typedText, selectedType, isUploadedWord]);
 
   const saveToHistory = (res: ScoringResult) => {
     const newRecord: TestRecord = {
@@ -104,7 +111,9 @@ const App: React.FC = () => {
       grossStrokes: res.grossStrokes,
       errorRate: res.errorRate,
       strokesPerMinute: res.strokesPerMinute,
-      timeSpent: res.timeSpent
+      timeSpent: res.timeSpent,
+      errorCount: res.errorCount,
+      penalties: res.penalties
     };
     setHistory(prev => [newRecord, ...prev]);
   };
@@ -134,18 +143,108 @@ const App: React.FC = () => {
     setState(AppState.INITIAL);
     setTypedText('');
     setOriginalText('');
+    setCustomTextInput('');
+    setManualTypedTextLibre('');
+    setManualTypedTextCotejo('');
     setResults(null);
     setHasStartedTyping(false);
     setIsCalculating(false);
+    setIsUploadedWord(false);
+    setHasSavedManualToHistory(false);
+  };
+
+  const handleWordUploadWithOption = async (event: React.ChangeEvent<HTMLInputElement>, optionType: TextType) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setLoading(true);
+      setState(AppState.GENERATING);
+      
+      const mammoth = await import('mammoth');
+      const arrayBuffer = await file.arrayBuffer();
+      const result = await mammoth.extractRawText({ arrayBuffer });
+      const text = result.value.trim();
+      
+      if (!text) {
+         alert("El archivo subido está vacío o no se pudo leer el texto.");
+         reset();
+         return;
+      }
+      
+      setIsUploadedWord(true);
+      setHasSavedManualToHistory(false);
+      setSelectedType(optionType);
+      
+      if (optionType === TextType.PLANO) {
+        setOriginalText(customTextInput);
+      } else {
+        setOriginalText('');
+      }
+      
+      setTypedText(text);
+      setHasStartedTyping(true);
+      setStartTime(Date.now() - 600000); 
+      setState(AppState.REVIEWING);
+    } catch (e: any) {
+      alert("Error leyendo el archivo Word: " + e.message);
+      reset();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDirectTextSubmission = (optionType: TextType, text: string) => {
+    if (!text.trim()) return;
+    
+    setIsUploadedWord(true); // Using identical logic as word upload so it skips history tracking
+    setHasSavedManualToHistory(false);
+    setSelectedType(optionType);
+    
+    if (optionType === TextType.PLANO) {
+      setOriginalText(customTextInput);
+    } else {
+      setOriginalText('');
+    }
+    
+    setTypedText(text.trim());
+    setHasStartedTyping(true);
+    setStartTime(Date.now() - 600000); 
+    setState(AppState.REVIEWING);
   };
 
   const renderHistory = () => {
     if (history.length === 0) return null;
     
     const totalTests = history.length;
+    const aptTests = history.filter(r => r.isApt).length;
+    const unaptTests = totalTests - aptTests;
     const totalSeconds = history.reduce((acc, curr) => acc + (curr.timeSpent || 600), 0);
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+    const groupedHistory = history.reduce((acc, curr) => {
+      const dateStr = new Date(curr.date).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      if (!acc[dateStr]) acc[dateStr] = [];
+      acc[dateStr].push(curr);
+      return acc;
+    }, {} as Record<string, TestRecord[]>);
+
+    // Sort days descending (newest first)
+    const sortedDays = Object.keys(groupedHistory).sort((a, b) => {
+      const [dayA, monthA, yearA] = a.split('/');
+      const [dayB, monthB, yearB] = b.split('/');
+      return new Date(`${yearB}-${monthB}-${dayB}`).getTime() - new Date(`${yearA}-${monthA}-${dayA}`).getTime();
+    });
+
+    // Sort sessions within a day descending (newest first)
+    Object.values(groupedHistory).forEach(dayRecords => {
+      dayRecords.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    });
+
+    const toggleDay = (day: string) => {
+      setExpandedDays(prev => ({ ...prev, [day]: !prev[day] }));
+    };
     
     return (
       <div id="historial-pruebas" className="max-w-5xl mx-auto mt-24">
@@ -162,7 +261,11 @@ const App: React.FC = () => {
                 </div>
                 <div>
                   <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Pruebas Totales</div>
-                  <div className="text-xl font-black text-gray-800">{totalTests}</div>
+                  <div className="flex items-baseline space-x-2">
+                    <span className="text-xl font-black text-gray-800">{totalTests}</span>
+                    <span className="text-xs font-bold text-green-600" title="Aptas">({aptTests} A)</span>
+                    <span className="text-xs font-bold text-red-500" title="No Aptas">({unaptTests} N)</span>
+                  </div>
                 </div>
               </div>
               <div className="bg-white px-5 py-3 rounded-2xl shadow-sm border border-gray-100 flex items-center">
@@ -181,47 +284,86 @@ const App: React.FC = () => {
           </button>
         </div>
         <div className="bg-white rounded-[2.5rem] shadow-xl border border-gray-100 overflow-hidden">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-gray-50 text-[10px] uppercase tracking-widest text-gray-400 border-b border-gray-100">
-                <th className="p-6 font-black">Fecha y Hora</th>
-                <th className="p-6 font-black">Modo</th>
-                <th className="p-6 font-black">Resultado</th>
-                <th className="p-6 font-black text-right">Netas</th>
-                <th className="p-6 font-black text-right">Errores</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map(record => (
-                <tr key={record.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                  <td className="p-6 text-sm font-bold text-gray-700">
-                    {new Date(record.date).toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                  </td>
-                  <td className="p-6 text-xs font-bold text-gray-500 uppercase">
-                    {record.type}
-                  </td>
-                  <td className="p-6">
-                    <div className="flex flex-col items-start">
-                      <span className={`px-4 py-1.5 rounded-full text-[10px] font-black tracking-widest ${record.isApt ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                        {record.isApt ? 'APTO' : 'NO APTO'}
-                      </span>
-                      {!record.isApt && record.reason && (
-                        <span className="text-[10px] text-red-500 font-bold mt-2 max-w-[200px] leading-tight">
-                          * {record.reason}
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="p-6 text-right font-black text-[#2b579a]">
-                    {Math.round(record.netStrokes)}
-                  </td>
-                  <td className="p-6 text-right text-sm font-bold text-gray-500">
-                    {record.errorRate.toFixed(2)}%
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {sortedDays.map(day => (
+            <div key={day} className="border-b border-gray-100 last:border-0">
+              <button 
+                onClick={() => toggleDay(day)}
+                className="w-full flex items-center justify-between p-6 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+              >
+                <div className="flex items-center">
+                  <svg className={`w-5 h-5 mr-4 text-gray-400 transition-transform ${expandedDays[day] ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>
+                  <span className="font-black text-gray-700">{day}</span>
+                  <span className="ml-4 text-xs font-bold text-gray-400 bg-white px-3 py-1 rounded-full border border-gray-200">{groupedHistory[day].length} sesiones</span>
+                </div>
+              </button>
+              
+              {expandedDays[day] && (
+                <table className="w-full text-left border-collapse bg-white">
+                  <thead>
+                    <tr className="bg-white text-[10px] uppercase tracking-widest text-gray-400 border-b border-gray-100">
+                      <th className="p-4 pl-16 font-black">Hora</th>
+                      <th className="p-4 font-black">Modo</th>
+                      <th className="p-4 font-black">Resultado</th>
+                      <th className="p-4 font-black text-right">Brutas</th>
+                      <th className="p-4 font-black text-right">Netas</th>
+                      <th className="p-4 font-black text-right">Errores</th>
+                      <th className="p-4 font-black text-right">Penaliz.</th>
+                      <th className="p-4 font-black text-right">% Error</th>
+                      <th className="p-4 font-black text-center w-16"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groupedHistory[day].map(record => (
+                      <tr key={record.id} className="border-b border-gray-50 hover:bg-gray-50 transition-colors last:border-0">
+                        <td className="p-4 pl-16 text-sm font-bold text-gray-700">
+                          {new Date(record.date).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                        </td>
+                        <td className="p-4 text-xs font-bold text-gray-500 uppercase">
+                          {record.type}
+                        </td>
+                        <td className="p-4">
+                          <div className="flex flex-col items-start">
+                            <span className={`px-3 py-1 rounded-full text-[10px] font-black tracking-widest ${record.isApt ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                              {record.isApt ? 'APTO' : 'NO APTO'}
+                            </span>
+                            {!record.isApt && record.reason && (
+                              <span className="text-[10px] text-red-500 font-bold mt-1 max-w-[200px] leading-tight">
+                                * {record.reason}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="p-4 text-right font-black text-gray-600">
+                          {record.grossStrokes || 0}
+                        </td>
+                        <td className="p-4 text-right font-black text-[#2b579a]">
+                          {Math.round(record.netStrokes)}
+                        </td>
+                        <td className="p-4 text-right text-sm font-bold text-gray-600">
+                          {record.errorCount !== undefined ? record.errorCount : '-'}
+                        </td>
+                        <td className="p-4 text-right text-sm font-bold text-red-500">
+                          {record.penalties !== undefined ? record.penalties : '-'}
+                        </td>
+                        <td className="p-4 text-right text-sm font-bold text-gray-500">
+                          {record.errorRate.toFixed(2)}%
+                        </td>
+                        <td className="p-4 text-center">
+                          <button 
+                            onClick={() => setHistory(prev => prev.filter(r => r.id !== record.id))}
+                            className="text-gray-400 hover:text-red-500 transition-colors p-2 rounded-full hover:bg-red-50"
+                            title="Borrar registro"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -291,6 +433,28 @@ const App: React.FC = () => {
 
         {state === AppState.RESULTS && (
           <div className="flex items-center space-x-4">
+            {results && isUploadedWord && !hasSavedManualToHistory && (
+              <button 
+                onClick={() => {
+                  saveToHistory(results);
+                  setHasSavedManualToHistory(true);
+                  alert("Guardado en el historial correctamente.");
+                }} 
+                className="bg-green-500 text-white hover:bg-green-600 px-6 py-2 rounded-full font-black text-xs tracking-widest uppercase transition-colors"
+                title="Guardar este resultado en el historial"
+              >
+                GUARDAR EN HISTORIAL
+              </button>
+            )}
+            {results && (
+              <button 
+                onClick={() => generateResultsPDF(results, typedText, selectedType, originalText)} 
+                className="bg-[#2b579a] text-white hover:bg-[#1e3e6d] px-6 py-2 rounded-full font-black text-xs tracking-widest uppercase transition-colors"
+                title="Descargar esta prueba en PDF"
+              >
+                Descargar PDF
+              </button>
+            )}
             <button onClick={() => {
               const historyEl = document.getElementById('historial-pruebas');
               if (historyEl) historyEl.scrollIntoView({ behavior: 'smooth' });
@@ -393,7 +557,105 @@ const App: React.FC = () => {
               </button>
             </div>
 
+            <div className="text-center mt-12 pt-12 border-t border-gray-200">
+              <p className="text-gray-500 font-bold mb-4 uppercase tracking-widest text-xs">¿Ya has hecho el texto en Word?</p>
+              <button 
+                onClick={() => setState(AppState.WORD_UPLOAD)}
+                className="cursor-pointer inline-flex items-center space-x-3 bg-white border border-gray-300 hover:bg-gray-50 text-[#2b579a] px-8 py-4 rounded-full font-black text-sm transition-all active:scale-95 shadow-sm hover:shadow-md"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                <span>EVALUAR DOCUMENTO WORD (.DOCX)</span>
+              </button>
+            </div>
+
             {renderHistory()}
+          </div>
+        )}
+
+        {state === AppState.WORD_UPLOAD && (
+          <div className="max-w-4xl mx-auto p-12">
+            <button onClick={reset} className="text-[#2b579a] font-bold text-[10px] tracking-widest uppercase hover:text-blue-800 transition-colors flex items-center mb-12">
+              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+              VOLVER AL INICIO
+            </button>
+            
+            <h2 className="text-3xl font-black text-[#2b579a] mb-12 uppercase tracking-tighter">Evaluar Documento Word</h2>
+            
+            <div className="grid md:grid-cols-2 gap-8">
+              <div className="bg-white p-8 rounded-[2rem] shadow-lg border border-gray-100 flex flex-col h-full">
+                <div className="mb-6 flex-1">
+                  <h3 className="text-xl font-black text-gray-800 mb-2">Evaluación Libre</h3>
+                  <p className="text-sm text-gray-500 leading-relaxed">
+                    Sube tu documento Word o pega tu texto. La Inteligencia Artificial analizará la ortografía y gramática utilizando el diccionario de la RAE, sin comparar con ningún texto base.
+                  </p>
+                </div>
+                <div className="mt-auto pt-6 border-t border-gray-100 flex flex-col gap-4">
+                  <textarea 
+                    value={manualTypedTextLibre}
+                    onChange={(e) => setManualTypedTextLibre(e.target.value)}
+                    placeholder="O pega aquí tu texto escrito..."
+                    className="w-full h-24 p-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-[#2b579a] focus:border-transparent resize-none"
+                  ></textarea>
+                  <div className="flex gap-2">
+                    <label className="flex-1 cursor-pointer flex items-center justify-center space-x-2 bg-gray-50 hover:bg-gray-100 text-[#2b579a] px-4 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all text-center">
+                      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                      <span className="truncate">SUBIR WORD</span>
+                      <input type="file" accept=".docx" className="hidden" onChange={(e) => handleWordUploadWithOption(e, TextType.LIBRE)} />
+                    </label>
+                    <button 
+                      onClick={() => handleDirectTextSubmission(TextType.LIBRE, manualTypedTextLibre)}
+                      disabled={!manualTypedTextLibre.trim()}
+                      className={`flex-1 cursor-pointer flex items-center justify-center space-x-2 text-white px-4 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all text-center ${!manualTypedTextLibre.trim() ? 'bg-gray-300 pointer-events-none' : 'bg-[#2b579a] hover:bg-[#1e3e6d]'}`}
+                    >
+                      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                      <span className="truncate">EVALUAR TEXTO</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white p-8 rounded-[2rem] shadow-lg border border-gray-100 flex flex-col h-full">
+                <div className="mb-6 flex-1 flex flex-col gap-4">
+                  <div>
+                    <h3 className="text-xl font-black text-gray-800 mb-2">Cotejo con Original</h3>
+                    <p className="text-sm text-gray-500 leading-relaxed">
+                      Pega el texto original de referencia y luego sube tu Word o pega tu texto escrito.
+                    </p>
+                  </div>
+                  <div className="flex-1 min-h-[8rem]">
+                    <textarea 
+                      value={customTextInput}
+                      onChange={(e) => setCustomTextInput(e.target.value)}
+                      placeholder="Pega aquí el texto original de referencia..."
+                      className="w-full h-full p-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-[#2b579a] focus:border-transparent resize-none"
+                    ></textarea>
+                  </div>
+                </div>
+                <div className="mt-auto pt-6 border-t border-gray-100 flex flex-col gap-4">
+                  <textarea 
+                    value={manualTypedTextCotejo}
+                    onChange={(e) => setManualTypedTextCotejo(e.target.value)}
+                    placeholder="O pega aquí tu texto escrito..."
+                    className="w-full h-24 p-4 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-[#2b579a] focus:border-transparent resize-none"
+                  ></textarea>
+                  <div className="flex gap-2">
+                    <label className={`flex-1 cursor-pointer flex items-center justify-center space-x-2 px-2 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all text-center ${customTextInput.length < 10 ? 'bg-gray-100 text-gray-400 pointer-events-none' : 'bg-gray-50 hover:bg-gray-100 text-[#2b579a]'}`}>
+                      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                      <span className="truncate">SUBIR WORD</span>
+                      <input type="file" accept=".docx" className="hidden" onChange={(e) => handleWordUploadWithOption(e, TextType.PLANO)} />
+                    </label>
+                    <button 
+                      onClick={() => handleDirectTextSubmission(TextType.PLANO, manualTypedTextCotejo)}
+                      disabled={customTextInput.length < 10 || !manualTypedTextCotejo.trim()}
+                      className={`flex-1 cursor-pointer flex items-center justify-center space-x-2 text-white px-2 py-3 rounded-xl font-black text-xs uppercase tracking-widest transition-all text-center ${customTextInput.length < 10 || !manualTypedTextCotejo.trim() ? 'bg-gray-300 pointer-events-none' : 'bg-[#2b579a] hover:bg-[#1e3e6d]'}`}
+                    >
+                      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                      <span className="truncate">EVALUAR TEXTO</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -598,7 +860,7 @@ const App: React.FC = () => {
                                         </div>
                                         {chunk.penalty !== undefined && chunk.penalty > 0 && (
                                           <div className="bg-red-500/20 text-red-400 font-black text-[10px] py-2 px-4 rounded-full inline-block mb-4 border border-red-500/30">
-                                            PENALIZACIÓN: -{chunk.penalty} PUNTOS
+                                            PENALIZACIÓN: -{chunk.penalty} {chunk.penalty === 1 ? 'PULSACIÓN' : 'PULSACIONES'}
                                           </div>
                                         )}
                                         {chunk.reason && <div className="text-[11px] text-gray-400 mt-4 font-medium bg-white/5 p-4 rounded-2xl border border-white/5 italic">"{chunk.reason}"</div>}

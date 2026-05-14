@@ -33,12 +33,30 @@ const isInversion = (original: string, typed: string): boolean => {
 };
 
 const getAffectedCharsCount = (original: string, typed: string): number => {
-  let errors = 0;
-  const maxLen = Math.max(original.length, typed.length);
-  for (let i = 0; i < maxLen; i++) {
-    if (original[i] !== typed[i]) errors++;
+  // Use Levenshtein distance to accurately count the minimum number of single-character edits
+  // (insertions, deletions, or substitutions) required to change one word into the other.
+  const matrix = Array(typed.length + 1).fill(null).map(() => Array(original.length + 1).fill(null));
+
+  for (let i = 0; i <= original.length; i++) {
+    matrix[0][i] = i;
   }
-  return errors;
+
+  for (let j = 0; j <= typed.length; j++) {
+    matrix[j][0] = j;
+  }
+
+  for (let j = 1; j <= typed.length; j++) {
+    for (let i = 1; i <= original.length; i++) {
+      const indicator = original[i - 1] === typed[j - 1] ? 0 : 1;
+      matrix[j][i] = Math.min(
+        matrix[j][i - 1] + 1, // deletion
+        matrix[j - 1][i] + 1, // insertion
+        matrix[j - 1][i - 1] + indicator // substitution
+      );
+    }
+  }
+
+  return matrix[typed.length][original.length];
 };
 
 /**
@@ -187,10 +205,8 @@ export const calculateFinalScore = (original: string, typed: string, timeSeconds
           let penalty = 0;
           if (affected === 1) {
             penalty = 5;
-          } else if (affected >= oWord.length) {
-            penalty = countStrokes(oWord);
           } else {
-            penalty = affected;
+            penalty = countStrokes(oWord);
           }
           totalPenalties += penalty;
           totalErrors++;
@@ -261,23 +277,28 @@ export const calculateFinalScore = (original: string, typed: string, timeSeconds
         const subO = origWords[oIdx + k];
         const subT = typedWords[tIdx + k];
         
-        if (isInversion(subO, subT)) {
+        if (subO === subT) {
+          diffMarkup.push({ type: 'match', original: subO, typed: subT, penalty: 0 });
+        } else if (isInversion(subO, subT)) {
           totalPenalties += 1;
           totalErrors++;
           diffMarkup.push({ type: 'inversion', original: subO, typed: subT, penalty: 1 });
         } else {
           const affected = getAffectedCharsCount(subO, subT);
           let penalty = 0;
-          if (affected === 1) {
+          if (affected === 0) {
+            diffMarkup.push({ type: 'match', original: subO, typed: subT, penalty: 0 });
+          } else if (affected === 1) {
             penalty = 5;
-          } else if (affected >= subO.length) {
-            penalty = countStrokes(subO);
+            totalPenalties += penalty;
+            totalErrors++;
+            diffMarkup.push({ type: 'substitution', original: subO, typed: subT, penalty });
           } else {
-            penalty = affected;
+            penalty = countStrokes(subO);
+            totalPenalties += penalty;
+            totalErrors++;
+            diffMarkup.push({ type: 'substitution', original: subO, typed: subT, penalty });
           }
-          totalPenalties += penalty;
-          totalErrors++;
-          diffMarkup.push({ type: 'substitution', original: subO, typed: subT, penalty });
         }
       }
 
@@ -307,23 +328,28 @@ export const calculateFinalScore = (original: string, typed: string, timeSeconds
     } else {
       // No hay sincronización: asumimos que la palabra actual es una sustitución (errata)
       if (oWord) {
-        if (isInversion(oWord, tWord)) {
+        if (oWord === tWord) {
+          diffMarkup.push({ type: 'match', original: oWord, typed: tWord, penalty: 0 });
+        } else if (isInversion(oWord, tWord)) {
           totalPenalties += 1;
           totalErrors++;
           diffMarkup.push({ type: 'inversion', original: oWord, typed: tWord, penalty: 1 });
         } else {
           const affected = getAffectedCharsCount(oWord, tWord);
           let penalty = 0;
-          if (affected === 1) {
+          if (affected === 0) {
+            diffMarkup.push({ type: 'match', original: oWord, typed: tWord, penalty: 0 });
+          } else if (affected === 1) {
             penalty = 5;
-          } else if (affected >= oWord.length) {
-            penalty = countStrokes(oWord);
+            totalPenalties += penalty;
+            totalErrors++;
+            diffMarkup.push({ type: 'substitution', original: oWord, typed: tWord, penalty });
           } else {
-            penalty = affected;
+            penalty = countStrokes(oWord);
+            totalPenalties += penalty;
+            totalErrors++;
+            diffMarkup.push({ type: 'substitution', original: oWord, typed: tWord, penalty });
           }
-          totalPenalties += penalty;
-          totalErrors++;
-          diffMarkup.push({ type: 'substitution', original: oWord, typed: tWord, penalty });
         }
         oIdx++;
         tIdx++;

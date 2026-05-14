@@ -49,7 +49,7 @@ const Editor: React.FC<EditorProps> = ({ originalText, typedText, onChange, disa
               </span>
             </div>
             <div 
-              className="p-16 overflow-y-auto font-serif text-[11pt] leading-[1.8] select-none text-gray-800 bg-[#fbfbfb] custom-scrollbar"
+              className="p-16 overflow-y-auto font-serif text-[12pt] leading-[1.8] select-none text-gray-800 bg-[#fbfbfb] custom-scrollbar"
               style={{ maxHeight: 'calc(100vh - 280px)' }}
             >
               {originalText.split('\n').filter(p => p.trim() !== "").map((para, i) => (

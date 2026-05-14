@@ -11,11 +11,37 @@ interface TimerProps {
 const Timer: React.FC<TimerProps> = ({ initialSeconds, onTimeUp, isActive, isPaused }) => {
   const [seconds, setSeconds] = useState(initialSeconds);
 
+  const playBeep = () => {
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); 
+      gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.5);
+    } catch (e) {
+      console.error("Audio playback failed", e);
+    }
+  };
+
   useEffect(() => {
     let interval: any = null;
     if (isActive && !isPaused && seconds > 0) {
       interval = setInterval(() => {
-        setSeconds((s) => s - 1);
+        setSeconds((s) => {
+          if (s - 1 === 60) {
+            playBeep();
+          }
+          return s - 1;
+        });
       }, 1000);
     } else if (seconds === 0) {
       onTimeUp();

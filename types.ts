@@ -4,7 +4,8 @@ export enum AppState {
   GENERATING = 'GENERATING',
   TESTING = 'TESTING',
   REVIEWING = 'REVIEWING',
-  RESULTS = 'RESULTS'
+  RESULTS = 'RESULTS',
+  WORD_UPLOAD = 'WORD_UPLOAD'
 }
 
 export enum TextType {
@@ -57,4 +58,6 @@ export interface TestRecord {
   errorRate: number;
   strokesPerMinute: number;
   timeSpent?: number;
+  errorCount?: number;
+  penalties?: number;
 }
